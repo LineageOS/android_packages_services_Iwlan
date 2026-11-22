@@ -1572,7 +1572,7 @@ public class EpdgTunnelManager {
             throw new IwlanSimNotReadyException("Nai is null.");
         }
 
-        Log.d(TAG, "getLocalIdentification: Nai: " + nai);
+        Log.d(TAG, "getLocalIdentification: Nai: " + IwlanHelper.maskNaiForLog(nai));
         return getId(nai, true);
     }
 
@@ -1605,7 +1605,7 @@ public class EpdgTunnelManager {
             option = new EapSessionConfig.EapAkaOption.Builder().setReauthId(mNextReauthId).build();
         }
 
-        Log.d(TAG, "getEapConfig: Nai: " + nai);
+        Log.d(TAG, "getEapConfig: Nai: " + IwlanHelper.maskNaiForLog(nai));
         return new EapSessionConfig.Builder()
                 .setEapAkaConfig(subId, TelephonyManager.APPTYPE_USIM, option)
                 .setEapIdentity(nai.getBytes(StandardCharsets.US_ASCII))
@@ -2027,7 +2027,12 @@ public class EpdgTunnelManager {
                         EapInfo eapInfo = sessionConfiguration.getEapInfo();
                         if (eapInfo instanceof EapAkaInfo eapAkaInfo) {
                             mNextReauthId = eapAkaInfo.getReauthId();
-                            Log.d(TAG, "Update ReauthId: " + Arrays.toString(mNextReauthId));
+                            Log.d(
+                                    TAG,
+                                    "Update ReauthId: "
+                                            + (mNextReauthId == null
+                                                    ? "null"
+                                                    : "[" + mNextReauthId.length + " bytes]"));
                         } else {
                             mNextReauthId = null;
                         }
