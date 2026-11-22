@@ -79,6 +79,26 @@ public class IwlanHelper {
                 .toString();
     }
 
+    /**
+     * The NAI (or EAP-AKA reauth ID) for a log line: the user part, which is the IMSI in a
+     * permanent NAI ("0<IMSI>@nai.epc..."), becomes "***" and at most its last two digits; the
+     * realm stays. Text without '@' is treated as a user part. Never logs the identity itself.
+     */
+    public static String maskNaiForLog(String nai) {
+        if (nai == null) {
+            return "null";
+        }
+        int at = nai.indexOf('@');
+        String user = at < 0 ? nai : nai.substring(0, at);
+        int kept = 0;
+        while (kept < 2
+                && kept < user.length()
+                && Character.isDigit(user.charAt(user.length() - 1 - kept))) {
+            kept++;
+        }
+        return "***" + user.substring(user.length() - kept) + (at < 0 ? "" : nai.substring(at));
+    }
+
     public static int getSubId(Context context, int slotId) {
         int subid = SubscriptionManager.INVALID_SUBSCRIPTION_ID;
 
