@@ -55,6 +55,7 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.net.ipsec.ike.ChildSaProposal;
 import android.net.ipsec.ike.ChildSessionCallback;
 import android.net.ipsec.ike.ChildSessionConfiguration;
 import android.net.ipsec.ike.ChildSessionParams;
@@ -125,6 +126,7 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executor;
 
 @RunWith(JUnit4.class)
@@ -229,6 +231,7 @@ public class EpdgTunnelManagerTest {
                         .mockStatic(ErrorPolicyManager.class)
                         .mockStatic(StatsLog.class)
                         .spyStatic(IwlanHelper.class)
+                        .spyStatic(ChildSaProposal.class)
                         .strictness(Strictness.LENIENT)
                         .startMocking();
         mMockedClockTime = 0;
@@ -795,6 +798,106 @@ public class EpdgTunnelManagerTest {
                 "Reorder higher AEAD in  Child SA mismatch",
                 SaProposal.ENCRYPTION_ALGORITHM_AES_GCM_16,
                 (long) childAeadAlgos.get(0).first);
+    }
+
+    @Test
+    public void testSaProposalsLeaveOutAlgorithmsUnsupportedByDevice() throws Exception {
+        final String apnName = "ims";
+        // A device whose kernel offers neither AES-XCBC nor AES-CTR for ESP.
+        when(ChildSaProposal.getSupportedEncryptionAlgorithms())
+                .thenReturn(
+                        Set.of(
+                                SaProposal.ENCRYPTION_ALGORITHM_AES_CBC,
+                                SaProposal.ENCRYPTION_ALGORITHM_AES_GCM_8,
+                                SaProposal.ENCRYPTION_ALGORITHM_AES_GCM_12,
+                                SaProposal.ENCRYPTION_ALGORITHM_AES_GCM_16));
+        when(ChildSaProposal.getSupportedIntegrityAlgorithms())
+                .thenReturn(
+                        Set.of(
+                                SaProposal.INTEGRITY_ALGORITHM_NONE,
+                                SaProposal.INTEGRITY_ALGORITHM_HMAC_SHA1_96,
+                                SaProposal.INTEGRITY_ALGORITHM_HMAC_SHA2_256_128,
+                                SaProposal.INTEGRITY_ALGORITHM_HMAC_SHA2_384_192,
+                                SaProposal.INTEGRITY_ALGORITHM_HMAC_SHA2_512_256));
+
+        IwlanCarrierConfig.putTestConfigIntArray(
+                CarrierConfigManager.Iwlan
+                        .KEY_SUPPORTED_CHILD_SESSION_ENCRYPTION_ALGORITHMS_INT_ARRAY,
+                new int[] {
+                    SaProposal.ENCRYPTION_ALGORITHM_AES_CBC, SaProposal.ENCRYPTION_ALGORITHM_AES_CTR
+                });
+        IwlanCarrierConfig.putTestConfigIntArray(
+                CarrierConfigManager.Iwlan.KEY_CHILD_SESSION_AES_CTR_KEY_SIZE_INT_ARRAY,
+                new int[] {SaProposal.KEY_LEN_AES_128});
+        IwlanCarrierConfig.putTestConfigIntArray(
+                CarrierConfigManager.Iwlan.KEY_SUPPORTED_INTEGRITY_ALGORITHMS_INT_ARRAY,
+                new int[] {
+                    SaProposal.INTEGRITY_ALGORITHM_AES_XCBC_96,
+                    SaProposal.INTEGRITY_ALGORITHM_HMAC_SHA2_256_128
+                });
+        IwlanCarrierConfig.putTestConfigBoolean(
+                CarrierConfigManager.Iwlan.KEY_SUPPORTS_IKE_SESSION_MULTIPLE_SA_PROPOSALS_BOOL,
+                true);
+        IwlanCarrierConfig.putTestConfigBoolean(
+                CarrierConfigManager.Iwlan.KEY_SUPPORTS_CHILD_SESSION_MULTIPLE_SA_PROPOSALS_BOOL,
+                true);
+
+        IkeSessionArgumentCaptors tunnelArgumentCaptors =
+                verifyBringUpTunnelWithDnsQuery(apnName, mMockDefaultNetwork);
+
+        ChildSessionParams childTunnelParams =
+                tunnelArgumentCaptors.mChildSessionParamsCaptor.getValue();
+        // The configured non-AEAD proposal, then the supported AEAD and non-AEAD proposals.
+        assertEquals(3, childTunnelParams.getChildSaProposals().size());
+        for (ChildSaProposal childSaProposal : childTunnelParams.getChildSaProposals()) {
+            assertFalse(
+                    childSaProposal
+                            .getIntegrityAlgorithms()
+                            .contains(SaProposal.INTEGRITY_ALGORITHM_AES_XCBC_96));
+            for (Pair<Integer, Integer> encrAlgo : childSaProposal.getEncryptionAlgorithms()) {
+                assertFalse(encrAlgo.first == SaProposal.ENCRYPTION_ALGORITHM_AES_CTR);
+            }
+        }
+
+        // IKE SA algorithms do not depend on the kernel, so they are still proposed.
+        IkeSessionParams ikeTunnelParams = tunnelArgumentCaptors.mIkeSessionParamsCaptor.getValue();
+        assertTrue(
+                ikeTunnelParams
+                        .getIkeSaProposals()
+                        .get(0)
+                        .getIntegrityAlgorithms()
+                        .contains(SaProposal.INTEGRITY_ALGORITHM_AES_XCBC_96));
+    }
+
+    @Test
+    public void testSupportedChildSaProposalsUsedWhenNoConfiguredOneIsSupported() throws Exception {
+        final String apnName = "ims";
+        when(ChildSaProposal.getSupportedIntegrityAlgorithms())
+                .thenReturn(
+                        Set.of(
+                                SaProposal.INTEGRITY_ALGORITHM_NONE,
+                                SaProposal.INTEGRITY_ALGORITHM_HMAC_SHA1_96,
+                                SaProposal.INTEGRITY_ALGORITHM_HMAC_SHA2_256_128,
+                                SaProposal.INTEGRITY_ALGORITHM_HMAC_SHA2_384_192,
+                                SaProposal.INTEGRITY_ALGORITHM_HMAC_SHA2_512_256));
+        IwlanCarrierConfig.putTestConfigIntArray(
+                CarrierConfigManager.Iwlan.KEY_SUPPORTED_INTEGRITY_ALGORITHMS_INT_ARRAY,
+                new int[] {SaProposal.INTEGRITY_ALGORITHM_AES_XCBC_96});
+
+        IkeSessionArgumentCaptors tunnelArgumentCaptors =
+                verifyBringUpTunnelWithDnsQuery(apnName, mMockDefaultNetwork);
+
+        ChildSessionParams childTunnelParams =
+                tunnelArgumentCaptors.mChildSessionParamsCaptor.getValue();
+        // The configured proposal has no supported integrity algorithm, so the supported AEAD
+        // and non-AEAD proposals are used instead.
+        assertEquals(2, childTunnelParams.getChildSaProposals().size());
+        for (ChildSaProposal childSaProposal : childTunnelParams.getChildSaProposals()) {
+            assertFalse(
+                    childSaProposal
+                            .getIntegrityAlgorithms()
+                            .contains(SaProposal.INTEGRITY_ALGORITHM_AES_XCBC_96));
+        }
     }
 
     @Test

@@ -17,12 +17,28 @@
 package com.google.android.iwlan.epdg;
 
 import android.net.ipsec.ike.IkeSaProposal;
+import android.support.annotation.Nullable;
+import android.util.Log;
 import android.util.Pair;
 
 import java.util.LinkedHashSet;
+import java.util.Set;
 
 public class EpdgIkeSaProposal extends EpdgSaProposal {
+    private static final String TAG = EpdgIkeSaProposal.class.getSimpleName();
+
     protected final LinkedHashSet<Integer> mProposedPrfAlgos = new LinkedHashSet<>();
+
+    /** IKE SA algorithms only need to be supported by the IKE library itself. */
+    @Override
+    protected Set<Integer> getPlatformSupportedEncryptionAlgos() {
+        return IkeSaProposal.getSupportedEncryptionAlgorithms();
+    }
+
+    @Override
+    protected Set<Integer> getPlatformSupportedIntegrityAlgos() {
+        return IkeSaProposal.getSupportedIntegrityAlgorithms();
+    }
 
     /**
      * Add proposed PRF algorithms by the carrier.
@@ -56,36 +72,52 @@ public class EpdgIkeSaProposal extends EpdgSaProposal {
 
     /**
      * Builds {@link IkeSaProposal} of carrier proposed encryption algorithms (non-AEAD) cipher
-     * suit.
+     * suit. Algorithms the device does not support are left out.
+     *
+     * @return the proposal, or null if a transform type it needs would be empty
      */
+    @Nullable
     public IkeSaProposal buildProposedIkeSaProposal() {
         return buildProposal(false, true);
     }
 
-    /** Builds {@link IkeSaProposal} of carrier proposed AEAD algorithms cipher suit. */
+    /**
+     * Builds {@link IkeSaProposal} of carrier proposed AEAD algorithms cipher suit. Algorithms the
+     * device does not support are left out.
+     *
+     * @return the proposal, or null if a transform type it needs would be empty
+     */
+    @Nullable
     public IkeSaProposal buildProposedIkeSaAeadProposal() {
         return buildProposal(true, true);
     }
 
     /**
      * Builds {@link IkeSaProposal} of Iwlan supported encryption algorithms (non-AEAD) cipher suit.
+     * Algorithms the device does not support are left out.
+     *
+     * @return the proposal, or null if a transform type it needs would be empty
      */
+    @Nullable
     public IkeSaProposal buildSupportedIkeSaProposal() {
         return buildProposal(false, false);
     }
 
-    /** Builds {@link IkeSaProposal} of Iwlan supported AEAD algorithms cipher suit. */
+    /**
+     * Builds {@link IkeSaProposal} of Iwlan supported AEAD algorithms cipher suit. Algorithms the
+     * device does not support are left out.
+     *
+     * @return the proposal, or null if a transform type it needs would be empty
+     */
+    @Nullable
     public IkeSaProposal buildSupportedIkeSaAeadProposal() {
         return buildProposal(true, false);
     }
 
+    @Nullable
     private IkeSaProposal buildProposal(boolean isAead, boolean isProposed) {
-        IkeSaProposal.Builder saProposalBuilder = new IkeSaProposal.Builder();
-
-        int[] dhGroups = isProposed ? getDhGroups() : getSupportedDhGroups();
-        for (int dhGroup : dhGroups) {
-            saProposalBuilder.addDhGroup(dhGroup);
-        }
+        int[] dhGroups =
+                filterSupportedDhGroups((isProposed) ? getDhGroups() : getSupportedDhGroups());
 
         Pair<Integer, Integer>[] encrAlgos;
 
@@ -94,24 +126,69 @@ public class EpdgIkeSaProposal extends EpdgSaProposal {
         } else {
             encrAlgos = (isProposed) ? getEncryptionAlgos() : getSupportedEncryptionAlgos();
         }
+        encrAlgos = filterSupportedEncryptionAlgos(encrAlgos, isAead);
 
-        for (Pair<Integer, Integer> encrAlgo : encrAlgos) {
-            saProposalBuilder.addEncryptionAlgorithm(encrAlgo.first, encrAlgo.second);
+        int[] integrityAlgos = new int[0];
+        if (!isAead) {
+            integrityAlgos =
+                    filterSupportedIntegrityAlgos(
+                            (isProposed) ? getIntegrityAlgos() : getSupportedIntegrityAlgos());
         }
 
-        if (!isAead) {
-            int[] integrityAlgos =
-                    (isProposed) ? getIntegrityAlgos() : getSupportedIntegrityAlgos();
+        int[] prfAlgos =
+                filterSupported(
+                        (isProposed) ? getPrfAlgos() : getSupportedPrfAlgos(),
+                        IkeSaProposal.getSupportedPseudorandomFunctions(),
+                        CONFIG_TYPE_PRF_ALGO);
+
+        // An IKE SA proposal needs a transform of each type, integrity unless it is AEAD.
+        String missingTransform = null;
+        if (dhGroups.length == 0) {
+            missingTransform = "DH group";
+        } else if (encrAlgos.length == 0) {
+            missingTransform = "encryption algorithm";
+        } else if (!isAead && integrityAlgos.length == 0) {
+            missingTransform = "integrity algorithm";
+        } else if (prfAlgos.length == 0) {
+            missingTransform = "PRF";
+        }
+        if (missingTransform != null) {
+            Log.w(
+                    TAG,
+                    "Not proposing the "
+                            + describeProposal(isAead, isProposed)
+                            + " IKE SA proposal: no supported "
+                            + missingTransform);
+            return null;
+        }
+
+        IkeSaProposal.Builder saProposalBuilder = new IkeSaProposal.Builder();
+        try {
+            for (int dhGroup : dhGroups) {
+                saProposalBuilder.addDhGroup(dhGroup);
+            }
+
+            for (Pair<Integer, Integer> encrAlgo : encrAlgos) {
+                saProposalBuilder.addEncryptionAlgorithm(encrAlgo.first, encrAlgo.second);
+            }
+
             for (int integrityAlgo : integrityAlgos) {
                 saProposalBuilder.addIntegrityAlgorithm(integrityAlgo);
             }
-        }
 
-        int[] prfAlgos = (isProposed) ? getPrfAlgos() : getSupportedPrfAlgos();
-        for (int prfAlgo : prfAlgos) {
-            saProposalBuilder.addPseudorandomFunction(prfAlgo);
-        }
+            for (int prfAlgo : prfAlgos) {
+                saProposalBuilder.addPseudorandomFunction(prfAlgo);
+            }
 
-        return saProposalBuilder.build();
+            return saProposalBuilder.build();
+        } catch (IllegalArgumentException e) {
+            Log.e(
+                    TAG,
+                    "Not proposing the invalid "
+                            + describeProposal(isAead, isProposed)
+                            + " IKE SA proposal",
+                    e);
+            return null;
+        }
     }
 }
