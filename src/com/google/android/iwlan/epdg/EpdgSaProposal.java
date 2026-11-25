@@ -20,7 +20,9 @@ import android.net.ipsec.ike.SaProposal;
 import android.util.Log;
 import android.util.Pair;
 
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -115,6 +117,21 @@ abstract class EpdgSaProposal {
             new LinkedHashSet<>();
     protected final LinkedHashSet<Pair<Integer, Integer>> mProposedAeadAlgos =
             new LinkedHashSet<>();
+
+    // Transforms already logged as unsupported by the device, so that each is logged only once.
+    private final Set<String> mLoggedUnsupportedTransforms = new HashSet<>();
+
+    /**
+     * Returns the encryption algorithms, AEAD algorithms included, that the platform supports for
+     * this SA type. Proposals must not contain any other, the IKE library rejects them.
+     */
+    protected abstract Set<Integer> getPlatformSupportedEncryptionAlgos();
+
+    /**
+     * Returns the integrity algorithms that the platform supports for this SA type. Proposals must
+     * not contain any other, the IKE library rejects them.
+     */
+    protected abstract Set<Integer> getPlatformSupportedIntegrityAlgos();
 
     /**
      * Add proposed DH groups by the carrier.
@@ -312,6 +329,62 @@ abstract class EpdgSaProposal {
         }
 
         return aeadAlgos;
+    }
+
+    /** Returns the given DH groups without those the platform does not support. */
+    protected int[] filterSupportedDhGroups(int[] dhGroups) {
+        return filterSupported(dhGroups, SaProposal.getSupportedDhGroups(), CONFIG_TYPE_DH_GROUP);
+    }
+
+    /** Returns the given integrity algorithms without those the platform does not support. */
+    protected int[] filterSupportedIntegrityAlgos(int[] integrityAlgos) {
+        return filterSupported(
+                integrityAlgos, getPlatformSupportedIntegrityAlgos(), CONFIG_TYPE_INTEGRITY_ALGO);
+    }
+
+    /**
+     * Returns the given encryption or AEAD algorithms and key lengths without the algorithms the
+     * platform does not support.
+     */
+    protected Pair<Integer, Integer>[] filterSupportedEncryptionAlgos(
+            Pair<Integer, Integer>[] encrAlgos, boolean isAead) {
+        Set<Integer> supportedAlgos = getPlatformSupportedEncryptionAlgos();
+        String configType = isAead ? CONFIG_TYPE_AEAD_ALGO : CONFIG_TYPE_ENCRYPT_ALGO;
+        return Arrays.stream(encrAlgos)
+                .filter(encrAlgo -> isSupported(encrAlgo.first, supportedAlgos, configType))
+                .toArray(Pair[]::new);
+    }
+
+    /** Returns the given transforms without those not in {@code supportedTransforms}. */
+    protected int[] filterSupported(
+            int[] transforms, Set<Integer> supportedTransforms, String configType) {
+        return Arrays.stream(transforms)
+                .filter(transform -> isSupported(transform, supportedTransforms, configType))
+                .toArray();
+    }
+
+    private boolean isSupported(
+            int transform, Set<Integer> supportedTransforms, String configType) {
+        if (supportedTransforms.contains(transform)) {
+            return true;
+        }
+
+        if (mLoggedUnsupportedTransforms.add(configType + ":" + transform)) {
+            Log.w(
+                    TAG,
+                    getClass().getSimpleName()
+                            + ": not proposing "
+                            + configType
+                            + ":"
+                            + transform
+                            + ", the device does not support it");
+        }
+        return false;
+    }
+
+    /** Describes a proposal for log messages. */
+    protected static String describeProposal(boolean isAead, boolean isProposed) {
+        return (isProposed ? "configured" : "supported") + (isAead ? " AEAD" : " non-AEAD");
     }
 
     protected static boolean validateConfig(

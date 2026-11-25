@@ -42,6 +42,7 @@ import android.net.NetworkRequest;
 import android.net.eap.EapAkaInfo;
 import android.net.eap.EapInfo;
 import android.net.eap.EapSessionConfig;
+import android.net.ipsec.ike.ChildSaProposal;
 import android.net.ipsec.ike.ChildSessionCallback;
 import android.net.ipsec.ike.ChildSessionConfiguration;
 import android.net.ipsec.ike.ChildSessionParams;
@@ -49,6 +50,7 @@ import android.net.ipsec.ike.IkeFqdnIdentification;
 import android.net.ipsec.ike.IkeIdentification;
 import android.net.ipsec.ike.IkeKeyIdIdentification;
 import android.net.ipsec.ike.IkeRfc822AddrIdentification;
+import android.net.ipsec.ike.IkeSaProposal;
 import android.net.ipsec.ike.IkeSession;
 import android.net.ipsec.ike.IkeSessionCallback;
 import android.net.ipsec.ike.IkeSessionConfiguration;
@@ -1092,13 +1094,14 @@ public class EpdgTunnelManager {
                 CarrierConfigManager.Iwlan.KEY_ADD_KE_TO_CHILD_SESSION_REKEY_BOOL)) {
             epdgChildSaProposal.enableAddChildSessionRekeyKePayload();
         }
+        // The build methods return null for a proposal that has no algorithm the device
+        // supports, those are left out.
+        List<ChildSaProposal> childSaProposals = new ArrayList<>();
         // Adds single SA proposal, priority is for AEAD if configured else non-AEAD proposal.
         if (isChildSessionAeadAlgosAvailable()) {
-            childSessionParamsBuilder.addChildSaProposal(
-                    epdgChildSaProposal.buildProposedChildSaAeadProposal());
+            childSaProposals.add(epdgChildSaProposal.buildProposedChildSaAeadProposal());
         } else {
-            childSessionParamsBuilder.addChildSaProposal(
-                    epdgChildSaProposal.buildProposedChildSaProposal());
+            childSaProposals.add(epdgChildSaProposal.buildProposedChildSaProposal());
         }
         // Adds multiple proposals. If AEAD proposal already added then adds
         // configured non-AEAD proposal followed by supported AEAD and non-AEAD proposals.
@@ -1107,13 +1110,20 @@ public class EpdgTunnelManager {
                 mSlotId,
                 CarrierConfigManager.Iwlan.KEY_SUPPORTS_CHILD_SESSION_MULTIPLE_SA_PROPOSALS_BOOL)) {
             if (isChildSessionAeadAlgosAvailable() && isChildSessionNonAeadAlgosAvailable()) {
-                childSessionParamsBuilder.addChildSaProposal(
-                        epdgChildSaProposal.buildProposedChildSaProposal());
+                childSaProposals.add(epdgChildSaProposal.buildProposedChildSaProposal());
             }
-            childSessionParamsBuilder.addChildSaProposal(
-                    epdgChildSaProposal.buildSupportedChildSaAeadProposal());
-            childSessionParamsBuilder.addChildSaProposal(
-                    epdgChildSaProposal.buildSupportedChildSaProposal());
+            childSaProposals.add(epdgChildSaProposal.buildSupportedChildSaAeadProposal());
+            childSaProposals.add(epdgChildSaProposal.buildSupportedChildSaProposal());
+        }
+        childSaProposals.removeIf(Objects::isNull);
+        if (childSaProposals.isEmpty()) {
+            Log.w(TAG, "No configured Child SA proposal is supported, proposing supported ones");
+            childSaProposals.add(epdgChildSaProposal.buildSupportedChildSaAeadProposal());
+            childSaProposals.add(epdgChildSaProposal.buildSupportedChildSaProposal());
+            childSaProposals.removeIf(Objects::isNull);
+        }
+        for (ChildSaProposal childSaProposal : childSaProposals) {
+            childSessionParamsBuilder.addChildSaProposal(childSaProposal);
         }
 
         boolean handoverIPv4Present = setupRequest.srcIpv4Address().isPresent();
@@ -1259,11 +1269,14 @@ public class EpdgTunnelManager {
 
         EpdgIkeSaProposal epdgIkeSaProposal = createEpdgIkeSaProposal();
 
+        // The build methods return null for a proposal that has no algorithm the device
+        // supports, those are left out.
+        List<IkeSaProposal> ikeSaProposals = new ArrayList<>();
         // Adds single SA proposal, priority is for AEAD if configured else non-AEAD proposal.
         if (isIkeSessionAeadAlgosAvailable()) {
-            builder.addIkeSaProposal(epdgIkeSaProposal.buildProposedIkeSaAeadProposal());
+            ikeSaProposals.add(epdgIkeSaProposal.buildProposedIkeSaAeadProposal());
         } else {
-            builder.addIkeSaProposal(epdgIkeSaProposal.buildProposedIkeSaProposal());
+            ikeSaProposals.add(epdgIkeSaProposal.buildProposedIkeSaProposal());
         }
         // Adds multiple proposals. If AEAD proposal already added then adds
         // configured non-AEAD proposal followed by supported AEAD and non-AEAD proposals.
@@ -1272,10 +1285,20 @@ public class EpdgTunnelManager {
                 mSlotId,
                 CarrierConfigManager.Iwlan.KEY_SUPPORTS_IKE_SESSION_MULTIPLE_SA_PROPOSALS_BOOL)) {
             if (isIkeSessionAeadAlgosAvailable() && isIkeSessionNonAeadAlgosAvailable()) {
-                builder.addIkeSaProposal(epdgIkeSaProposal.buildProposedIkeSaProposal());
+                ikeSaProposals.add(epdgIkeSaProposal.buildProposedIkeSaProposal());
             }
-            builder.addIkeSaProposal(epdgIkeSaProposal.buildSupportedIkeSaAeadProposal());
-            builder.addIkeSaProposal(epdgIkeSaProposal.buildSupportedIkeSaProposal());
+            ikeSaProposals.add(epdgIkeSaProposal.buildSupportedIkeSaAeadProposal());
+            ikeSaProposals.add(epdgIkeSaProposal.buildSupportedIkeSaProposal());
+        }
+        ikeSaProposals.removeIf(Objects::isNull);
+        if (ikeSaProposals.isEmpty()) {
+            Log.w(TAG, "No configured IKE SA proposal is supported, proposing supported ones");
+            ikeSaProposals.add(epdgIkeSaProposal.buildSupportedIkeSaAeadProposal());
+            ikeSaProposals.add(epdgIkeSaProposal.buildSupportedIkeSaProposal());
+            ikeSaProposals.removeIf(Objects::isNull);
+        }
+        for (IkeSaProposal ikeSaProposal : ikeSaProposals) {
+            builder.addIkeSaProposal(ikeSaProposal);
         }
 
         if (needIncludeInitialContact(epdgAddress)) {
